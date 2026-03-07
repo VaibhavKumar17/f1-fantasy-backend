@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>F1 Fantasy League</title>
+</head>
+
+<body>
+
+<h1>F1 Fantasy League</h1>
+
+<h2>Create Team</h2>
+
+<input id="username" placeholder="Enter username">
+
+<br><br>
+
+<select id="d1"></select>
+<select id="d2"></select>
+<select id="d3"></select>
+<select id="d4"></select>
+<select id="d5"></select>
+
+<br><br>
+
+<button onclick="submitTeam()">Submit Team</button>
+
+<h2>Leaderboard</h2>
+
+<button onclick="loadLeaderboard()">Refresh Leaderboard</button>
+
+<ul id="leaderboard"></ul>
+
+<script>
+
+async function loadDrivers(){
+
+let res = await fetch("/drivers")
+let data = await res.json()
+
+let drivers = data.drivers
+
+let selects = ["d1","d2","d3","d4","d5"]
+
+selects.forEach(id => {
+
+let dropdown = document.getElementById(id)
+
+drivers.forEach(d => {
+
+let option = document.createElement("option")
+
+option.value = d.id
+option.text = d.name
+
+dropdown.appendChild(option)
+
+})
+
+})
+
+}
+
+async function submitTeam(){
+
+let username = document.getElementById("username").value
+
+let drivers = [
+document.getElementById("d1").value,
+document.getElementById("d2").value,
+document.getElementById("d3").value,
+document.getElementById("d4").value,
+document.getElementById("d5").value
+]
+
+let res = await fetch("/create-team",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({
+username:username,
+drivers:drivers
+})
+})
+
+let data = await res.json()
+
+if(data.error){
+alert(data.error)
+}else{
+alert(data.message)
+}
+
+}
+
+async function loadLeaderboard(){
+
+let res = await fetch("/leaderboard")
+
+let data = await res.json()
+
+let list = document.getElementById("leaderboard")
+
+list.innerHTML = ""
+
+data.forEach(player => {
+
+let li = document.createElement("li")
+
+li.textContent = player.rank + ". " + player.username + " — " + player.points + " pts"
+
+list.appendChild(li)
+
+})
+
+}
+
+loadDrivers()
+
+</script>
+
+</body>
+
+</html>
