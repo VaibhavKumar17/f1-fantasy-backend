@@ -8,6 +8,7 @@ from fastapi import Body
 from database import SessionLocal
 from models import Team, TeamPick, RaceScore
 from scoring import get_last_race_results, get_race_results, calculate_team_score
+from schedule import can_edit_round, get_lock_status, fetch_schedule, get_next_editable_round
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
@@ -79,9 +80,21 @@ def create_team(team: dict = Body(...)):
             db.commit()
 
         if race_round:
+            round_str = str(race_round)
+            # 1) Leaderboard already stored for this round – no changes
+            closed = db.query(RaceScore).filter(RaceScore.race_round == round_str).first() is not None
+            if closed:
+                db.close()
+                return {"error": "This round is closed. You cannot change your team pick after the race has been closed."}
+            # 2) Hard lock: Q1 started – team_picks for this round must never change. Unfreeze only after race (race + 2h).
+            allowed, reason = can_edit_round(round_str)
+            if not allowed:
+                db.close()
+                return {"error": reason or "Team lock is closed for this round."}
+
             pick = db.query(TeamPick).filter(
                 TeamPick.username == username,
-                TeamPick.race_round == str(race_round),
+                TeamPick.race_round == round_str,
             ).first()
             if pick:
                 pick.driver1, pick.driver2, pick.driver3, pick.driver4, pick.driver5 = drivers
@@ -89,7 +102,7 @@ def create_team(team: dict = Body(...)):
             else:
                 db.add(TeamPick(
                     username=username,
-                    race_round=str(race_round),
+                    race_round=round_str,
                     driver1=drivers[0],
                     driver2=drivers[1],
                     driver3=drivers[2],
@@ -210,6 +223,47 @@ def leaderboard_race(round_id: str):
         db.close()
 
 
+@app.get("/schedule")
+def api_schedule():
+    """Current season schedule with lock/unfreeze times (Q1 = lock, race_end = race_start + 2h). For display and debugging."""
+    schedule = fetch_schedule()
+    return {
+        "races": [
+            {
+                "round": r["round"],
+                "race_name": r["race_name"],
+                "qualifying_utc": r["qualifying_utc"].isoformat() if r.get("qualifying_utc") else None,
+                "race_start_utc": r["race_start_utc"].isoformat() if r.get("race_start_utc") else None,
+                "race_end_utc": r["race_end_utc"].isoformat() if r.get("race_end_utc") else None,
+            }
+            for r in schedule
+        ],
+        "next_editable_round": get_next_editable_round(),
+    }
+
+
+@app.get("/lock-status/{round_id}")
+def lock_status(round_id: str):
+    """
+    Lock status for a round. Uses schedule: locked at Q1, unfreeze after race (race start + 2h).
+    - locked: Q1 has started – team_picks for this round cannot be changed.
+    - race_ended: race is over (2h after start); next round becomes editable.
+    - closed: leaderboard stored (RaceScore); round fully finalised.
+    """
+    db = SessionLocal()
+    try:
+        rid = str(round_id)
+        status = get_lock_status(rid)
+        closed = db.query(RaceScore).filter(RaceScore.race_round == rid).first() is not None
+        status["closed"] = closed
+        if closed:
+            status["can_edit"] = False
+            status["reason"] = "Round closed; leaderboard stored."
+        return status
+    finally:
+        db.close()
+
+
 @app.get("/leaderboard/history")
 def leaderboard_history():
     """List of past races with leaderboards (round, race_name).
@@ -242,7 +296,9 @@ def leaderboard_history():
 
 @app.post("/close-race")
 def close_race(body: dict = Body(...)):
-    """Store leaderboard for a race after the weekend. Body: { "round": "1", "race_name": "Australian GP" }."""
+    """Store leaderboard for a race after the weekend. Call this after the RACE finishes (not after qualifying).
+    Body: { "round": "1", "race_name": "Australian GP" }.
+    Once closed, team picks for that round cannot be changed and the round appears in leaderboard history."""
     db = SessionLocal()
     round_id = body.get("round")
     race_name = body.get("race_name") or f"Round {round_id}"
