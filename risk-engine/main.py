@@ -155,11 +155,19 @@ def leaderboard_season():
     """Cumulative season standings from stored race scores. Fallback: last race + current teams so teams show before any race is closed."""
     db = SessionLocal()
     try:
-        rows = db.query(RaceScore.username, RaceScore.points).all()
+        # Group by (race_round, username) to avoid any accidental duplicates before summing per user.
+        rows = db.query(RaceScore.race_round, RaceScore.username, RaceScore.points).all()
         if rows:
+            per_round_user = {}
+            for (round_id, username, points) in rows:
+                key = (str(round_id), username)
+                # Keep the max points per round/user in case of duplicates
+                per_round_user[key] = max(per_round_user.get(key, 0), points)
+
             totals = {}
-            for (username, points) in rows:
+            for (_, username), points in per_round_user.items():
                 totals[username] = totals.get(username, 0) + points
+
             out = [{"username": u, "points": p} for u, p in totals.items()]
             out.sort(key=lambda x: x["points"], reverse=True)
             for i, t in enumerate(out):
@@ -310,6 +318,8 @@ def close_race(body: dict = Body(...)):
         db.close()
         return {"error": "No results for this round yet"}
     try:
+        # Overwrite any existing scores for this round so closing the same race twice doesn't double-count.
+        db.query(RaceScore).filter(RaceScore.race_round == str(round_id)).delete()
         picks = db.query(TeamPick).filter(TeamPick.race_round == str(round_id)).all()
         for pick in picks:
             drivers = [pick.driver1, pick.driver2, pick.driver3, pick.driver4, pick.driver5]
