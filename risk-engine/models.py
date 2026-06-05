@@ -40,3 +40,5 @@ class RaceScore(Base):
     race_name = Column(String)
     username = Column(String, index=True)
     points = Column(Integer)
+    driver_points = Column(Integer, default=0)
+    constructor_points = Column(Integer, default=0)
