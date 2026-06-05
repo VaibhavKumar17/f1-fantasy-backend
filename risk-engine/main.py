@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from routers.drivers import get_current_drivers
 from routers.constructors import get_constructors
@@ -102,15 +102,15 @@ def create_team(team: dict = Body(...)):
     constructors_list = team.get("constructors")
     race_round = team.get("race_round")
     if not username or not drivers:
-        return {"error": "username and drivers are required"}
+        raise HTTPException(status_code=400, detail="username and drivers are required")
     if not isinstance(drivers, list) or len(drivers) != 5:
-        return {"error": "drivers must be a list of 5 driver ids"}
+        raise HTTPException(status_code=400, detail="drivers must be a list of 5 driver ids")
     if len(set(drivers)) != 5:
-        return {"error": "Drivers must be unique"}
+        raise HTTPException(status_code=400, detail="Drivers must be unique")
     if not constructors_list or not isinstance(constructors_list, list) or len(constructors_list) != 2:
-        return {"error": "constructors must be a list of 2 constructor ids"}
+        raise HTTPException(status_code=400, detail="constructors must be a list of 2 constructor ids")
     if len(set(constructors_list)) != 2:
-        return {"error": "Constructors must be different"}
+        raise HTTPException(status_code=400, detail="Constructors must be different")
 
     con1, con2 = constructors_list[0], constructors_list[1]
 
@@ -120,19 +120,19 @@ def create_team(team: dict = Body(...)):
     else:
         round_str = get_next_editable_round()
         if not round_str:
-            return {"error": "No round is currently open for editing. Teams are locked during the weekend."}
+            raise HTTPException(status_code=400, detail="No round is currently open for editing. Teams are locked during the weekend.")
 
     db = SessionLocal()
     try:
         # Check if the round is closed
         closed = db.query(RaceScore).filter(RaceScore.race_round == round_str).first() is not None
         if closed:
-            return {"error": "This round is closed. You cannot change your team pick after the race has been closed."}
+            raise HTTPException(status_code=400, detail="This round is closed. You cannot change your team pick after the race has been closed.")
 
         # Check if the round is locked
         allowed, reason = can_edit_round(round_str)
         if not allowed:
-            return {"error": reason or "Team lock is closed for this round."}
+            raise HTTPException(status_code=400, detail=reason or "Team lock is closed for this round.")
 
         # Update global Team table (current active team)
         existing = db.query(Team).filter(Team.username == username).first()
@@ -174,9 +174,11 @@ def create_team(team: dict = Body(...)):
             ))
         db.commit()
         return {"message": f"Team locked in successfully for Round {round_str}"}
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 @app.get("/leaderboard")
@@ -451,11 +453,11 @@ def close_race(body: dict = Body(...)):
     race_name = body.get("race_name") or f"Round {round_id}"
     if not round_id:
         db.close()
-        return {"error": "round is required"}
+        raise HTTPException(status_code=400, detail="round is required")
     driver_results, constructor_points = get_race_results(round_id)
     if not driver_results:
         db.close()
-        return {"error": "No results for this round yet"}
+        raise HTTPException(status_code=400, detail="No results for this round yet")
     try:
         # Overwrite any existing scores for this round so closing the same race twice doesn't double-count.
         db.query(RaceScore).filter(RaceScore.race_round == str(round_id)).delete()
@@ -483,7 +485,7 @@ def close_race(body: dict = Body(...)):
         return {"message": f"Race {round_id} closed", "entries": entries_count}
     except Exception as e:
         db.rollback()
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
