@@ -50,6 +50,7 @@ def get_user_team_for_round(db, username: str, round_id: str):
     Resolve the team pick for a user for a given round.
     If the round is locked:
         Find the most recent TeamPick for this user for any round <= round_id.
+        Do NOT fall back to the current active team (which might be from a later round).
     If the round is not locked:
         Return the global Team entry (if it exists).
     """
@@ -68,32 +69,21 @@ def get_user_team_for_round(db, username: str, round_id: str):
         return None
     else:
         picks = db.query(TeamPick).filter(TeamPick.username == username).all()
-        if picks:
-            valid_picks = []
-            for p in picks:
-                p_round_int = int(p.race_round) if p.race_round.isdigit() else 0
-                if p_round_int <= rid_int:
-                    valid_picks.append((p_round_int, p))
-            if valid_picks:
-                valid_picks.sort(key=lambda x: x[0], reverse=True)
-                best_pick = valid_picks[0][1]
-                return {
-                    "username": username,
-                    "race_round": round_id,
-                    "drivers": [best_pick.driver1, best_pick.driver2, best_pick.driver3, best_pick.driver4, best_pick.driver5],
-                    "constructors": [best_pick.constructor1, best_pick.constructor2],
-                }
-            return None
-        else:
-            team = db.query(Team).filter(Team.username == username).first()
-            if team:
-                return {
-                    "username": username,
-                    "race_round": round_id,
-                    "drivers": [team.driver1, team.driver2, team.driver3, team.driver4, team.driver5],
-                    "constructors": [team.constructor1, team.constructor2],
-                }
-            return None
+        valid_picks = []
+        for p in picks:
+            p_round_int = int(p.race_round) if p.race_round.isdigit() else 0
+            if p_round_int <= rid_int:
+                valid_picks.append((p_round_int, p))
+        if valid_picks:
+            valid_picks.sort(key=lambda x: x[0], reverse=True)
+            best_pick = valid_picks[0][1]
+            return {
+                "username": username,
+                "race_round": round_id,
+                "drivers": [best_pick.driver1, best_pick.driver2, best_pick.driver3, best_pick.driver4, best_pick.driver5],
+                "constructors": [best_pick.constructor1, best_pick.constructor2],
+            }
+        return None
 
 @app.post("/create-team")
 def create_team(team: dict = Body(...)):
@@ -442,9 +432,130 @@ def close_race(body: dict = Body(...)):
 
 
 models.Base.metadata.create_all(bind=engine)
+
 @app.get("/drivers")
 def get_drivers():
     return {"drivers": get_current_drivers()}
+
+@app.get("/debug-db")
+def debug_db():
+    db = SessionLocal()
+    try:
+        teams = db.query(Team).all()
+        picks = db.query(TeamPick).all()
+        scores = db.query(RaceScore).all()
+        return {
+            "teams": [
+                {
+                    "id": t.id,
+                    "username": t.username,
+                    "drivers": [t.driver1, t.driver2, t.driver3, t.driver4, t.driver5],
+                    "constructors": [t.constructor1, t.constructor2]
+                }
+                for t in teams
+            ],
+            "team_picks": [
+                {
+                    "id": p.id,
+                    "username": p.username,
+                    "race_round": p.race_round,
+                    "drivers": [p.driver1, p.driver2, p.driver3, p.driver4, p.driver5],
+                    "constructors": [p.constructor1, p.constructor2]
+                }
+                for p in picks
+            ],
+            "race_scores": [
+                {
+                    "id": s.id,
+                    "race_round": s.race_round,
+                    "race_name": s.race_name,
+                    "username": s.username,
+                    "points": s.points,
+                    "driver_points": s.driver_points,
+                    "constructor_points": s.constructor_points
+                }
+                for s in scores
+            ]
+        }
+    finally:
+        db.close()
+
+def seed_and_backfill_historical_data():
+    db = SessionLocal()
+    try:
+        # 1. Seed Rock profile if missing
+        rock = db.query(Team).filter(Team.username == "Rock").first()
+        if not rock:
+            print("Seeding Rock user team...")
+            db.add(Team(
+                username="Rock",
+                driver1="leclerc",
+                driver2="antonelli",
+                driver3="russell",
+                driver4="alonso",
+                driver5="colapinto",
+                constructor1="mercedes",
+                constructor2="audi"
+            ))
+            db.commit()
+
+        # 2. Seed indianguru Round 1 pick if missing
+        guru_r1 = db.query(TeamPick).filter(TeamPick.username == "indianguru", TeamPick.race_round == "1").first()
+        if not guru_r1:
+            print("Seeding indianguru Round 1 pick...")
+            db.add(TeamPick(
+                username="indianguru",
+                race_round="1",
+                driver1="russell",
+                driver2="piastri",
+                driver3="colapinto",
+                driver4="perez",
+                driver5="hadjar",
+                constructor1="mercedes",
+                constructor2="williams"
+            ))
+
+        # 3. Seed Rock Round 2 pick if missing
+        rock_r2 = db.query(TeamPick).filter(TeamPick.username == "Rock", TeamPick.race_round == "2").first()
+        if not rock_r2:
+            print("Seeding Rock Round 2 pick...")
+            db.add(TeamPick(
+                username="Rock",
+                race_round="2",
+                driver1="leclerc",
+                driver2="antonelli",
+                driver3="russell",
+                driver4="alonso",
+                driver5="colapinto",
+                constructor1="mercedes",
+                constructor2="audi"
+            ))
+
+        # 4. Backfill Round 4 and 5 picks for users who registered (exist in Team table)
+        all_teams = db.query(Team).all()
+        for t in all_teams:
+            # Backfill for rounds 4 and 5 if picks are missing
+            for r in ["4", "5"]:
+                existing_pick = db.query(TeamPick).filter(TeamPick.username == t.username, TeamPick.race_round == r).first()
+                if not existing_pick:
+                    print(f"Backfilling pick for {t.username} for Round {r} using active team...")
+                    db.add(TeamPick(
+                        username=t.username,
+                        race_round=r,
+                        driver1=t.driver1,
+                        driver2=t.driver2,
+                        driver3=t.driver3,
+                        driver4=t.driver4,
+                        driver5=t.driver5,
+                        constructor1=t.constructor1,
+                        constructor2=t.constructor2
+                    ))
+        db.commit()
+    except Exception as e:
+        print("Error during database seeding/backfilling:", e)
+        db.rollback()
+    finally:
+        db.close()
 
 # Database Schema upgrade & automatic recalculation on startup
 def upgrade_db_schema_and_recalculate():
@@ -459,45 +570,76 @@ def upgrade_db_schema_and_recalculate():
             db.commit()
             
             models.Base.metadata.create_all(bind=engine)
-            print("Database schema upgraded successfully. Recalculating historical scores...")
+            print("Database schema upgraded successfully.")
             
-            rounds = db.query(TeamPick.race_round).distinct().all()
-            for (round_str,) in rounds:
-                if not round_str:
-                    continue
-                print(f"Recalculating scores for Round {round_str}...")
-                driver_results, constructor_points = get_race_results(round_str)
-                if not driver_results:
-                    continue
+        # Run seeding and backfilling
+        seed_and_backfill_historical_data()
+        
+        # Deduplicate to prevent race condition double-counting
+        db.execute(sqlalchemy.text("""
+            DELETE FROM team_picks 
+            WHERE id NOT IN (
+                SELECT MAX(id) 
+                FROM team_picks 
+                GROUP BY username, race_round
+            )
+        """))
+        db.execute(sqlalchemy.text("""
+            DELETE FROM race_scores 
+            WHERE id NOT IN (
+                SELECT MAX(id) 
+                FROM race_scores 
+                GROUP BY username, race_round
+            )
+        """))
+        db.commit()
+        
+        # Recalculate scores for any completed rounds that don't have entries in race_scores.
+        rounds = db.query(TeamPick.race_round).distinct().all()
+        for (round_str,) in rounds:
+            if not round_str:
+                continue
                 
-                race_name = f"Round {round_str}"
-                try:
-                    from schedule import fetch_schedule, get_round_info
-                    sch = fetch_schedule()
-                    info = get_round_info(sch, round_str)
-                    if info and info.get("race_name"):
-                        race_name = info["race_name"]
-                except Exception:
-                    pass
+            # If scores already exist for this round, don't recalculate
+            existing_count = db.query(RaceScore).filter(RaceScore.race_round == round_str).count()
+            if existing_count > 0:
+                print(f"Scores for Round {round_str} already exist. Skipping recalculation.")
+                continue
                 
-                picks = db.query(TeamPick).filter(models.TeamPick.race_round == round_str).all()
-                for pick in picks:
-                    drivers = [pick.driver1, pick.driver2, pick.driver3, pick.driver4, pick.driver5]
-                    constructors = [pick.constructor1, pick.constructor2]
-                    
-                    driver_score = calculate_team_score(drivers, driver_results)
-                    constructor_score = calculate_constructor_score(constructors, constructor_points)
-                    
-                    db.add(RaceScore(
-                        race_round=round_str,
-                        race_name=race_name,
-                        username=pick.username,
-                        points=driver_score + constructor_score,
-                        driver_points=driver_score,
-                        constructor_points=constructor_score
-                    ))
-                db.commit()
-                print(f"Round {round_str} scores recalculated successfully.")
+            print(f"Recalculating scores for Round {round_str}...")
+            driver_results, constructor_points = get_race_results(round_str)
+            if not driver_results:
+                print(f"Could not get race results for Round {round_str}. Skipping.")
+                continue
+                
+            race_name = f"Round {round_str}"
+            try:
+                from schedule import fetch_schedule, get_round_info
+                sch = fetch_schedule()
+                info = get_round_info(sch, round_str)
+                if info and info.get("race_name"):
+                    race_name = info["race_name"]
+            except Exception:
+                pass
+                
+            picks = db.query(TeamPick).filter(models.TeamPick.race_round == round_str).all()
+            for pick in picks:
+                drivers = [pick.driver1, pick.driver2, pick.driver3, pick.driver4, pick.driver5]
+                constructors = [pick.constructor1, pick.constructor2]
+                
+                driver_score = calculate_team_score(drivers, driver_results)
+                constructor_score = calculate_constructor_score(constructors, constructor_points)
+                
+                db.add(RaceScore(
+                    race_round=round_str,
+                    race_name=race_name,
+                    username=pick.username,
+                    points=driver_score + constructor_score,
+                    driver_points=driver_score,
+                    constructor_points=constructor_score
+                ))
+            db.commit()
+            print(f"Round {round_str} scores recalculated successfully.")
     except Exception as e:
         print("Error during database upgrade or recalculation:", e)
     finally:

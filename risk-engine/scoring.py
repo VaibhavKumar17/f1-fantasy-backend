@@ -72,31 +72,68 @@ def get_last_race_results():
     return driver_results, constructor_points
 
 
+FALLBACK_RACE_RESULTS = {
+    "1": (
+        {'russell': 1, 'antonelli': 2, 'leclerc': 3, 'hamilton': 4, 'norris': 5, 'max_verstappen': 6, 'bearman': 7, 'arvid_lindblad': 8, 'bortoleto': 9, 'gasly': 10, 'ocon': 11, 'albon': 12, 'lawson': 13, 'colapinto': 14, 'sainz': 15, 'perez': 16, 'stroll': 17, 'alonso': 18, 'bottas': 19, 'hadjar': 20, 'piastri': 21, 'hulkenberg': 22},
+        {'mercedes': 43, 'ferrari': 27, 'mclaren': 10, 'red_bull': 8, 'haas': 6, 'rb': 4, 'audi': 2, 'alpine': 1, 'williams': 0, 'cadillac': 0, 'aston_martin': 0}
+    ),
+    "2": (
+        {'antonelli': 1, 'russell': 2, 'hamilton': 3, 'leclerc': 4, 'bearman': 5, 'gasly': 6, 'lawson': 7, 'hadjar': 8, 'sainz': 9, 'colapinto': 10, 'hulkenberg': 11, 'arvid_lindblad': 12, 'bottas': 13, 'ocon': 14, 'perez': 15, 'max_verstappen': 16, 'alonso': 17, 'stroll': 18, 'piastri': 19, 'norris': 20, 'bortoleto': 21, 'albon': 22},
+        {'mercedes': 43, 'ferrari': 27, 'haas': 10, 'alpine': 9, 'rb': 6, 'red_bull': 4, 'williams': 2, 'audi': 0, 'cadillac': 0, 'aston_martin': 0, 'mclaren': 0}
+    ),
+    "4": (
+        {'antonelli': 1, 'norris': 2, 'piastri': 3, 'russell': 4, 'max_verstappen': 5, 'hamilton': 6, 'colapinto': 7, 'leclerc': 8, 'sainz': 9, 'albon': 10, 'bearman': 11, 'bortoleto': 12, 'ocon': 13, 'arvid_lindblad': 14, 'alonso': 15, 'perez': 16, 'stroll': 17, 'bottas': 18, 'hulkenberg': 19, 'lawson': 20, 'gasly': 21, 'hadjar': 22},
+        {'mercedes': 37, 'mclaren': 33, 'red_bull': 10, 'ferrari': 12, 'alpine': 6, 'williams': 3, 'haas': 0, 'audi': 0, 'rb': 0, 'aston_martin': 0, 'cadillac': 0}
+    ),
+    "5": (
+        {'antonelli': 1, 'hamilton': 2, 'max_verstappen': 3, 'leclerc': 4, 'hadjar': 5, 'colapinto': 6, 'lawson': 7, 'gasly': 8, 'sainz': 9, 'bearman': 10, 'piastri': 11, 'hulkenberg': 12, 'bortoleto': 13, 'ocon': 14, 'stroll': 15, 'bottas': 16, 'perez': 17, 'norris': 18, 'russell': 19, 'alonso': 20, 'albon': 21, 'arvid_lindblad': 22},
+        {'mercedes': 25, 'ferrari': 30, 'red_bull': 25, 'alpine': 12, 'rb': 6, 'williams': 2, 'haas': 1, 'mclaren': 0, 'audi': 0, 'aston_martin': 0, 'cadillac': 0}
+    )
+}
+
 def get_race_results(race_round):
     """
     Get results for a specific round (e.g. "1", "2").
     Returns a tuple (driver_results, constructor_points) or (None, None) if no results.
     """
-    url = f"https://api.jolpi.ca/ergast/f1/current/{race_round}/results.json"
-    response = requests.get(url)
-    data = response.json()
-    races = data.get("MRData", {}).get("RaceTable", {}).get("Races", [])
-    if len(races) == 0:
-        return None, None
-    results = races[0].get("Results", [])
-    driver_results = {}
-    constructor_points = {}
-    for r in results:
-        driver_id = r["Driver"]["driverId"]
-        frontend_driver_id = denormalize_driver_id(driver_id)
-        position = int(r["position"])
-        driver_results[frontend_driver_id] = position
+    import time
+    round_str = str(race_round)
+    url = f"https://api.jolpi.ca/ergast/f1/current/{round_str}/results.json"
+    
+    # Try fetching from API with retries
+    for attempt in range(3):
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                races = data.get("MRData", {}).get("RaceTable", {}).get("Races", [])
+                if len(races) > 0:
+                    results = races[0].get("Results", [])
+                    driver_results = {}
+                    constructor_points = {}
+                    for r in results:
+                        driver_id = r["Driver"]["driverId"]
+                        frontend_driver_id = denormalize_driver_id(driver_id)
+                        position = int(r["position"])
+                        driver_results[frontend_driver_id] = position
+                        
+                        constructor_id = r["Constructor"]["constructorId"]
+                        frontend_c_id = denormalize_constructor_id(constructor_id)
+                        pts = _driver_points_for_position(position)
+                        constructor_points[frontend_c_id] = constructor_points.get(frontend_c_id, 0) + pts
+                    return driver_results, constructor_points
+            elif response.status_code == 429:
+                time.sleep(2) # Backoff on rate limit
+        except Exception as e:
+            print(f"API attempt {attempt+1} failed for round {round_str}: {e}")
+            time.sleep(1)
+            
+    # Fallback to local verified results if available
+    if round_str in FALLBACK_RACE_RESULTS:
+        print(f"Using local fallback results for Round {round_str}")
+        return FALLBACK_RACE_RESULTS[round_str]
         
-        constructor_id = r["Constructor"]["constructorId"]
-        frontend_c_id = denormalize_constructor_id(constructor_id)
-        pts = _driver_points_for_position(position)
-        constructor_points[frontend_c_id] = constructor_points.get(frontend_c_id, 0) + pts
-    return driver_results, constructor_points
+    return None, None
 
 
 def calculate_team_score(team_drivers, race_results):
