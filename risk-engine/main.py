@@ -515,49 +515,6 @@ models.Base.metadata.create_all(bind=engine)
 def get_drivers():
     return {"drivers": get_current_drivers()}
 
-@app.get("/debug-db")
-def debug_db():
-    db = SessionLocal()
-    try:
-        teams = db.query(Team).all()
-        picks = db.query(TeamPick).all()
-        scores = db.query(RaceScore).all()
-        return {
-            "teams": [
-                {
-                    "id": t.id,
-                    "username": t.username,
-                    "drivers": [t.driver1, t.driver2, t.driver3, t.driver4, t.driver5],
-                    "constructors": [t.constructor1, t.constructor2]
-                }
-                for t in teams
-            ],
-            "team_picks": [
-                {
-                    "id": p.id,
-                    "username": p.username,
-                    "race_round": p.race_round,
-                    "drivers": [p.driver1, p.driver2, p.driver3, p.driver4, p.driver5],
-                    "constructors": [p.constructor1, p.constructor2]
-                }
-                for p in picks
-            ],
-            "race_scores": [
-                {
-                    "id": s.id,
-                    "race_round": s.race_round,
-                    "race_name": s.race_name,
-                    "username": s.username,
-                    "points": s.points,
-                    "driver_points": s.driver_points,
-                    "constructor_points": s.constructor_points
-                }
-                for s in scores
-            ]
-        }
-    finally:
-        db.close()
-
 def seed_and_backfill_historical_data():
     db = SessionLocal()
     try:
