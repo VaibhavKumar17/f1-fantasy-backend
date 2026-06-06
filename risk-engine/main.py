@@ -566,7 +566,58 @@ def seed_and_backfill_historical_data():
                 constructor2="audi"
             ))
 
-        # 4. Backfill Round 4 and 5 picks for users who registered (exist in Team table)
+        # 4. Seed production users and Round 6 picks
+        prod_teams = {
+            "indianguru": {
+                "drivers": ["max_verstappen", "leclerc", "bearman", "arvid_lindblad", "hamilton"],
+                "constructors": ["ferrari", "rb"]
+            },
+            "runner": {
+                "drivers": ["russell", "hamilton", "leclerc", "bearman", "colapinto"],
+                "constructors": ["ferrari", "audi"]
+            },
+            "hammy": {
+                "drivers": ["piastri", "norris", "leclerc", "bearman", "hadjar"],
+                "constructors": ["ferrari", "alpine"]
+            },
+            "offendednerd": {
+                "drivers": ["leclerc", "antonelli", "max_verstappen", "hadjar", "gasly"],
+                "constructors": ["ferrari", "alpine"]
+            }
+        }
+        
+        for username, data in prod_teams.items():
+            existing = db.query(Team).filter(Team.username == username).first()
+            if not existing:
+                print(f"Restoring production team for {username}...")
+                db.add(Team(
+                    username=username,
+                    driver1=data["drivers"][0],
+                    driver2=data["drivers"][1],
+                    driver3=data["drivers"][2],
+                    driver4=data["drivers"][3],
+                    driver5=data["drivers"][4],
+                    constructor1=data["constructors"][0],
+                    constructor2=data["constructors"][1]
+                ))
+            
+            existing_r6 = db.query(TeamPick).filter(TeamPick.username == username, TeamPick.race_round == "6").first()
+            if not existing_r6:
+                print(f"Restoring Round 6 lock-in pick for {username}...")
+                db.add(TeamPick(
+                    username=username,
+                    race_round="6",
+                    driver1=data["drivers"][0],
+                    driver2=data["drivers"][1],
+                    driver3=data["drivers"][2],
+                    driver4=data["drivers"][3],
+                    driver5=data["drivers"][4],
+                    constructor1=data["constructors"][0],
+                    constructor2=data["constructors"][1]
+                ))
+        db.commit()
+
+        # 5. Backfill Round 4 and 5 picks for users who registered (exist in Team table)
         all_teams = db.query(Team).all()
         for t in all_teams:
             # Backfill for rounds 4 and 5 if picks are missing
