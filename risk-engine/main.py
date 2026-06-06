@@ -85,6 +85,64 @@ def get_user_team_for_round(db, username: str, round_id: str):
             }
         return None
 
+def backfill_and_recalculate_user(db, username: str):
+    """Backfills Round 4 & 5 picks for a specific user using their active team, and recalculates their scores."""
+    team = db.query(Team).filter(Team.username == username).first()
+    if not team:
+        return
+        
+    updated = False
+    for r in ["4", "5"]:
+        existing_pick = db.query(TeamPick).filter(TeamPick.username == username, TeamPick.race_round == r).first()
+        if not existing_pick:
+            print(f"Dynamic backfill: creating Round {r} pick for {username}...")
+            db.add(TeamPick(
+                username=username,
+                race_round=r,
+                driver1=team.driver1,
+                driver2=team.driver2,
+                driver3=team.driver3,
+                driver4=team.driver4,
+                driver5=team.driver5,
+                constructor1=team.constructor1,
+                constructor2=team.constructor2
+            ))
+            updated = True
+            
+    if updated:
+        db.commit()
+        # Recalculate scores for Round 4 & 5 for this user
+        for r in ["4", "5"]:
+            driver_results, constructor_points = get_race_results(r)
+            if not driver_results:
+                continue
+                
+            # Clear existing score for this user/round to avoid duplicate
+            db.query(RaceScore).filter(RaceScore.race_round == r, RaceScore.username == username).delete()
+            
+            race_name = f"Round {r}"
+            try:
+                from schedule import fetch_schedule, get_round_info
+                sch = fetch_schedule()
+                info = get_round_info(sch, r)
+                if info and info.get("race_name"):
+                    race_name = info["race_name"]
+            except Exception:
+                pass
+                
+            driver_score = calculate_team_score([team.driver1, team.driver2, team.driver3, team.driver4, team.driver5], driver_results)
+            constructor_score = calculate_constructor_score([team.constructor1, team.constructor2], constructor_points)
+            
+            db.add(RaceScore(
+                race_round=r,
+                race_name=race_name,
+                username=username,
+                points=driver_score + constructor_score,
+                driver_points=driver_score,
+                constructor_points=constructor_score
+            ))
+        db.commit()
+
 @app.post("/create-team")
 def create_team(team: dict = Body(...)):
     username = team.get("username")
@@ -163,6 +221,10 @@ def create_team(team: dict = Body(...)):
                 constructor2=con2,
             ))
         db.commit()
+        try:
+            backfill_and_recalculate_user(db, username)
+        except Exception as e:
+            print(f"Failed to dynamically backfill user {username}: {e}")
         return {"message": f"Team locked in successfully for Round {round_str}"}
     except HTTPException:
         raise
@@ -176,6 +238,14 @@ def leaderboard():
     """Season leaderboard: sum of points from all closed races."""
     db = SessionLocal()
     try:
+        # Dynamically backfill and recalculate any registered users who don't have picks for rounds 4 and 5
+        all_teams = db.query(Team).all()
+        for team in all_teams:
+            try:
+                backfill_and_recalculate_user(db, team.username)
+            except Exception as e:
+                print(f"Leaderboard dynamic backfill error for {team.username}: {e}")
+                
         rows = db.query(RaceScore.race_round, RaceScore.username, RaceScore.points).all()
         totals = {}
         for (_, username, points) in rows:
@@ -201,6 +271,14 @@ def leaderboard_season(type: str = "combined"):
     """Cumulative season standings. type: 'combined' (WDC + WCC), 'wdc' (drivers only), 'wcc' (constructors only)."""
     db = SessionLocal()
     try:
+        # Dynamically backfill and recalculate any registered users who don't have picks for rounds 4 and 5
+        all_teams = db.query(Team).all()
+        for team in all_teams:
+            try:
+                backfill_and_recalculate_user(db, team.username)
+            except Exception as e:
+                print(f"Season Leaderboard dynamic backfill error for {team.username}: {e}")
+                
         if type == "wdc":
             query_col = RaceScore.driver_points
         elif type == "wcc":
