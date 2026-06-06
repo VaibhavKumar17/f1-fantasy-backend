@@ -183,41 +183,25 @@ def create_team(team: dict = Body(...)):
         db.close()
 @app.get("/leaderboard")
 def leaderboard():
-    """Season leaderboard: sum of points from all closed races. Fallback: last race with current teams."""
+    """Season leaderboard: sum of points from all closed races."""
     db = SessionLocal()
     try:
         rows = db.query(RaceScore.race_round, RaceScore.username, RaceScore.points).all()
-        if rows:
-            totals = {}
-            for (_, username, points) in rows:
-                totals[username] = totals.get(username, 0) + points
-            out = [{"username": u, "points": p} for u, p in totals.items()]
-            
-            # Merge in all registered teams with 0 points if not present
-            all_teams = db.query(Team).all()
-            for team in all_teams:
-                if not any(x["username"] == team.username for x in out):
-                    out.append({"username": team.username, "points": 0})
-                    
-            out.sort(key=lambda x: x["points"], reverse=True)
-            for i, t in enumerate(out):
-                t["rank"] = i + 1
-            return out
-        driver_results, constructor_points = get_last_race_results()
-        if isinstance(driver_results, dict):
-            teams = db.query(Team).all()
-            out = []
-            for team in teams:
-                drivers = [team.driver1, team.driver2, team.driver3, team.driver4, team.driver5]
-                constructors = [team.constructor1, team.constructor2]
-                driver_score = calculate_team_score(drivers, driver_results or {})
-                constructor_score = calculate_constructor_score(constructors, constructor_points or {})
-                out.append({"username": team.username, "points": driver_score + constructor_score})
-            out.sort(key=lambda x: x["points"], reverse=True)
-            for i, t in enumerate(out):
-                t["rank"] = i + 1
-            return out
-        return []
+        totals = {}
+        for (_, username, points) in rows:
+            totals[username] = totals.get(username, 0) + (points or 0)
+        out = [{"username": u, "points": p} for u, p in totals.items()]
+        
+        # Merge in all registered teams with 0 points if not present
+        all_teams = db.query(Team).all()
+        for team in all_teams:
+            if not any(x["username"] == team.username for x in out):
+                out.append({"username": team.username, "points": 0})
+                
+        out.sort(key=lambda x: x["points"], reverse=True)
+        for i, t in enumerate(out):
+            t["rank"] = i + 1
+        return out
     finally:
         db.close()
 
@@ -235,49 +219,25 @@ def leaderboard_season(type: str = "combined"):
             query_col = RaceScore.points
 
         rows = db.query(RaceScore.race_round, RaceScore.username, query_col).all()
-        if rows:
-            per_round_user = {}
-            for (round_id, username, points) in rows:
-                key = (str(round_id), username)
-                per_round_user[key] = max(per_round_user.get(key, 0), points or 0)
+        per_round_user = {}
+        for (round_id, username, points) in rows:
+            key = (str(round_id), username)
+            per_round_user[key] = max(per_round_user.get(key, 0), points or 0)
 
-            totals = {}
-            for (_, username), points in per_round_user.items():
-                totals[username] = totals.get(username, 0) + points
+        totals = {}
+        for (_, username), points in per_round_user.items():
+            totals[username] = totals.get(username, 0) + (points or 0)
 
-            out = [{"username": u, "points": p} for u, p in totals.items()]
-            
-            all_teams = db.query(Team).all()
-            for team in all_teams:
-                if not any(x["username"] == team.username for x in out):
-                    out.append({"username": team.username, "points": 0})
-                    
-            out.sort(key=lambda x: x["points"], reverse=True)
-            for i, t in enumerate(out):
-                t["rank"] = i + 1
-            return out
-        driver_results, constructor_points = get_last_race_results()
-        if isinstance(driver_results, dict) and "message" not in driver_results:
-            teams = db.query(Team).all()
-            out = []
-            for team in teams:
-                drivers = [team.driver1, team.driver2, team.driver3, team.driver4, team.driver5]
-                constructors = [team.constructor1, team.constructor2]
-                driver_score = calculate_team_score(drivers, driver_results)
-                constructor_score = calculate_constructor_score(constructors, constructor_points)
-                if type == "wdc":
-                    score = driver_score
-                elif type == "wcc":
-                    score = constructor_score
-                else:
-                    score = driver_score + constructor_score
-                out.append({"username": team.username, "points": score})
-            out.sort(key=lambda x: x["points"], reverse=True)
-            for i, t in enumerate(out):
-                t["rank"] = i + 1
-            return out
-        teams = db.query(Team).all()
-        out = [{"username": t.username, "points": 0, "rank": i + 1} for i, t in enumerate(teams)]
+        out = [{"username": u, "points": p} for u, p in totals.items()]
+        
+        all_teams = db.query(Team).all()
+        for team in all_teams:
+            if not any(x["username"] == team.username for x in out):
+                out.append({"username": team.username, "points": 0})
+                
+        out.sort(key=lambda x: x["points"], reverse=True)
+        for i, t in enumerate(out):
+            t["rank"] = i + 1
         return out
     finally:
         db.close()
@@ -416,9 +376,7 @@ def round_teams(round_id: str, username: str | None = None):
 @app.get("/leaderboard/history")
 def leaderboard_history():
     """List of past races with leaderboards (round, race_name).
-
-    Primary source: stored RaceScore rows (after /close-race).
-    Fallback: if none stored yet, infer rounds from TeamPick so the race tab can still show \"live\" leaderboards.
+    Only returns rounds that actually have closed results stored in RaceScore.
     """
     db = SessionLocal()
     try:
@@ -429,13 +387,6 @@ def leaderboard_history():
             if rd not in seen:
                 seen.add(rd)
                 out.append({"round": rd, "race_name": name or f"Round {rd}"})
-
-        # Fallback: if no stored race scores yet, infer from team picks
-        if not out:
-            pick_rounds = db.query(TeamPick.race_round).distinct().all()
-            for (rd,) in pick_rounds:
-                if rd:
-                    out.append({"round": rd, "race_name": f"Round {rd}"})
 
         out.sort(key=lambda x: int(x["round"]) if str(x["round"]).isdigit() else 0)
         return out
